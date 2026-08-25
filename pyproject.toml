@@ -1,0 +1,20 @@
+[project]
+name = "agent-runner-lite-candidate"
+version = "1.0.0"
+description = "Starter scaffold for the Agent Systems intern take-home (governed agent runner)."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+filterwarnings = [
+  # Starlette's TestClient warns about httpx versions. Nothing to do with your code — silenced
+  # so a fresh `pytest` run is clean.
+  "ignore::DeprecationWarning:starlette.*",
+  "ignore:Using `httpx` with `starlette.testclient`:UserWarning",
+  "ignore::UserWarning:fastapi.testclient",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
