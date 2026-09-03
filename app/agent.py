@@ -60,95 +60,75 @@ class AgentDeps:
 
 
 def run_agent(run: Run, deps: AgentDeps) -> Run:
-    """TASK 3 — TODO(candidate): drive one run from start to finish. The main event.
+    """TASK 3 — drive one run from start to finish. The main event.
 
-    Do this AFTER tasks 1, 2 and 4 — this function calls all of them, and it's far easier to debug
-    a loop when the pieces it uses are already tested.
-
-    The helpers below do the fiddly parts. Read all five before you start; roughly two thirds of
-    this function is calling them in the right order.
-
-    ── The shape of it ────────────────────────────────────────────────────────────────────────
-
-        task = deps.store.get_task(run.task_id)
-        messages = [system prompt, then the task goal as a user message]
-        writes_done = 0
-        run.status = "running"
-
-        for _ in range(deps.settings.max_steps):
-
-            1. DECIDE. intent = _decide(deps, messages)
-               If it's None the model never produced valid JSON: emit an "error" step, set
-               run.status = "failed" and run.error, and stop.
-
-            2. FINISHED? If intent.intent == "final": emit a "final" step carrying
-               intent.answer, set run.status = "completed", and break out of the loop.
-
-            3. FIND THE TOOL. tool = deps.registry.get(intent.tool)
-               If it isn't there, this is a hallucinated tool name. Do NOT crash and do NOT fail
-               the run — emit a "tool_result" step with ok=False, append an observation saying the
-               tool is unknown, and `continue`. The model gets to try something else. This is the
-               single most common reason a real agent loop falls over, and the `unknown_tool`
-               scenario exists so you can prove yours doesn't.
-
-            4. GATE IT. decision = evaluate_gate(run.autonomy, tool.kind, writes_done,
-                                                 deps.settings.max_auto_writes)
-               Emit a "gate" step recording decision.reason — this is the audit trail.
-
-               If decision.requires_approval:
-                   approved = _ask_reviewer(task, run, deps)
-                   If not approved: emit a failed "tool_result", append an observation saying the
-                   reviewer declined, and `continue`. A rejection is not a crash — the run carries
-                   on and the model can do something else or finish.
-
-            5. RUN IT. result, ok = _execute(tool, intent.args, run, decision.simulate)
-               Emit a "tool_call" step and a "tool_result" step.
-
-               If ok and tool.kind == "write":
-                   append an Effect to run.effects — tool name, the args used, and
-                   simulated=decision.simulate — and increment writes_done. Both halves matter:
-                   the Effect is what the verifier reads, and writes_done is what the gate's
-                   budget counts.
-
-               An unsuccessful tool call (ok is False, meaning it raised ToolError) is NOT fatal
-               either. Feed it back like the unknown tool and carry on.
-
-            6. TELL THE MODEL. messages.append({"role": "user",
-                                                "content": _observation(result)})
-
-        If the loop runs to its limit without a "final", the model never finished: emit an "error"
-        step and set run.status = "failed". Do not leave the status as "running" — a caller polling
-        this run would wait forever.
-
-        Wrap the whole thing in try/except. A FatalError from the model, or any unexpected
-        exception, should mark the run "failed" with the message in run.error rather than escaping
-        to the caller. An agent runner that 500s when a provider rejects a key isn't finished.
-
-        Finally, if the run completed: run.verdict = verify(task, run). Then return run.
-
-    ── What we're looking for ─────────────────────────────────────────────────────────────────
-
-    The theme running through all of the above: a tool that doesn't exist, a tool that errors, and
-    a reviewer who says no are all NORMAL. They're observations, fed back to the model. Only two
-    things end a run — the model saying it's done, or something genuinely unrecoverable.
-
-    Every branch emits a Step. Afterwards, `run.steps` should read like a transcript of what
-    happened and why each write was permitted.
-
-    ── Tests worth writing ────────────────────────────────────────────────────────────────────
-
-      - the "default" scenario completes with no tool calls and no effects
-      - "send_followup" under `autonomous` completes, records exactly one effect, and passes
-        verification when the task expects that message
-      - the same scenario under `shadow` records the effect with simulated=True, still passes
-        verification, and leaves `deps.workspace.messages` EMPTY (nothing really happened —
-        assert on the workspace, not just the effect list)
-      - "unknown_tool" completes rather than raising
-      - "three_writes" under `autonomous` with max_auto_writes=1 → the later writes are gated
-      - "never_finishes" ends with status "failed" and does not hang
-      - "bad_credentials" ends with status "failed" and does not raise out of run_agent
+    The loop:
+      1. DECIDE. intent = _decide(deps, messages)
+      2. FINISHED? If intent.intent == "final", emit and complete.
+      3. FIND THE TOOL. If hallucinated, emit error and continue.
+      4. GATE IT. Evaluate autonomy. If requires approval, ask reviewer.
+      5. RUN IT. _execute, emit call/result, record effect if write.
+      6. TELL THE MODEL. Append observation to messages.
     """
-    raise NotImplementedError("run_agent — see TASK 3")
+    task = deps.store.get_task(run.task_id)
+    messages = initial_messages(task.goal)
+    writes_done = 0
+    run.status = "running"
+
+    try:
+        for _ in range(deps.settings.max_steps):
+            intent = _decide(deps, messages)
+            if intent is None:
+                _emit(run, "error", message="Model failed to produce valid JSON")
+                run.status = "failed"
+                run.error = "Model failed to produce valid JSON"
+                break
+
+            if intent.intent == "final":
+                _emit(run, "final", message=intent.answer)
+                run.status = "completed"
+                break
+
+            tool = deps.registry.get(intent.tool)
+            if tool is None:
+                result = {"error": f"Unknown tool: {intent.tool}"}
+                _emit(run, "tool_result", tool=intent.tool, result=result, ok=False)
+                messages.append({"role": "user", "content": _observation(result)})
+                continue
+
+            decision = evaluate_gate(run.autonomy, tool.kind, writes_done, deps.settings.max_auto_writes)
+            _emit(run, "gate", message=decision.reason)
+
+            if decision.requires_approval:
+                approved = _ask_reviewer(task, run, deps)
+                if not approved:
+                    result = {"error": "Reviewer declined the write"}
+                    _emit(run, "tool_result", tool=tool.name, result=result, ok=False)
+                    messages.append({"role": "user", "content": _observation(result)})
+                    continue
+
+            result, ok = _execute(tool, intent.args, run, decision.simulate)
+            _emit(run, "tool_call", tool=tool.name, args=intent.args)
+            _emit(run, "tool_result", tool=tool.name, result=result, ok=ok)
+
+            if ok and tool.kind == "write":
+                run.effects.append(Effect(tool=tool.name, args=intent.args, simulated=decision.simulate))
+                writes_done += 1
+
+            messages.append({"role": "user", "content": _observation(result)})
+
+        if run.status == "running":
+            _emit(run, "error", message="Max steps reached")
+            run.status = "failed"
+
+    except Exception as e:
+        run.status = "failed"
+        run.error = str(e)
+
+    if run.status == "completed":
+        run.verdict = verify(task, run)
+
+    return run
 
 
 # ─── Provided helpers ─────────────────────────────────────────────────────────────────────────
@@ -199,7 +179,7 @@ def _ask_reviewer(task: Task, run: Run, deps: AgentDeps) -> bool:
 
     PROVIDED. In the real product this suspends the run, notifies a reviewer, and waits for them
     to click approve or reject. Here the answer is `task.reviewer_approves`, decided when the task
-    was created — the same trick as the scripted model, and for the same reason: a test can't wait
+    was created — the same trick as the scripted model, and for the same reason, a test can't wait
     for a human.
 
     What matters is that your loop handles BOTH answers correctly, not how the answer arrives.
