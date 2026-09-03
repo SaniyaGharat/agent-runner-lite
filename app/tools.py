@@ -70,7 +70,7 @@ class Workspace:
     def send_message(
         self, contact_id: str = "", body: str = "", idempotency_key: str = "", **_: Any
     ) -> dict[str, Any]:
-        """TASK 4b — TODO(candidate): make sending a message safe to call twice.
+        """TASK 4b — make sending a message safe to call twice.
 
         Here's the problem this solves. Sending a message is not like updating a field: if an
         update runs twice you end up in the same place, but if a *send* runs twice the customer
@@ -83,25 +83,30 @@ class Workspace:
 
         The agent already generates a stable key per (run, step) for you — see `_execute` in
         app/agent.py. Your job is the remembering.
-
-        What to do:
-          - if `contact_id` or `idempotency_key` is missing, raise ToolError. A key is not
-            optional; without one the caller can't be protected.
-          - if the contact doesn't exist, raise ToolError (same as update_contact).
-          - if `idempotency_key` is already in `self._idem`: return the stored result, but with
-            "deduped": True, and do NOT append to self.messages.
-          - otherwise: append the message to `self.messages`, build the result, store it in
-            `self._idem` under the key, and return it with "deduped": False.
-          - the returned dict should include at least "message_id" and "contact_id".
-
-        A message id like f"m_{len(self.messages)}" is fine.
-
-        The test that matters: call it twice with the same key, then assert
-        `len(ws.messages) == 1`. Checking the return value alone isn't enough — the bug you're
-        guarding against is the second message existing, so assert on the world, not the
-        response. Write that test first.
         """
-        raise ToolError("send_message not implemented — see TASK 4b")
+        if not contact_id or not idempotency_key:
+            raise ToolError("contact_id and idempotency_key are required")
+
+        contact = self.contacts.get(contact_id)
+        if contact is None:
+            raise ToolError(f"contact {contact_id!r} not found")
+
+        if idempotency_key in self._idem:
+            result = dict(self._idem[idempotency_key])
+            result["deduped"] = True
+            return result
+
+        # Actually send the message
+        message = {"contact_id": contact_id, "body": body}
+        self.messages.append(message)
+
+        result = {
+            "message_id": f"m_{len(self.messages)}",
+            "contact_id": contact_id,
+            "deduped": False
+        }
+        self._idem[idempotency_key] = result
+        return result
 
 
 @dataclass(frozen=True)
@@ -109,7 +114,7 @@ class ToolDef:
     """One entry in the registry: what the tool is called, whether it writes, and how to run it.
 
     `kind` is the field the governance policy reads. It's the only thing separating "look
-    something up" from "change the world" as far as the gate is concerned.
+    something up" from "change the world" in the gate is concerned.
     """
 
     name: str
@@ -123,7 +128,7 @@ def build_registry(ws: Workspace) -> dict[str, ToolDef]:
 
     The agent looks tools up here by the name the model asked for. A name that isn't in this dict
     is an "unknown tool" — which happens for real, because a model can hallucinate a tool that
-    sounds plausible. Your loop has to handle that without falling over.
+    doesn't exist. Your loop has to handle that without falling over.
     """
     return {
         "search_contacts": ToolDef(
