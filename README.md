@@ -85,32 +85,81 @@ By then you'll have the shape of the codebase and two of the six tasks done.
 
 # Your write-up
 
-Please replace this section before submitting. See `BRIEF.md` §7 for what we're after.
-
 ### What's working
 
-<!-- Which of the six tasks are done? Anything half-finished or knowingly broken? -->
+All six tasks are complete: the governance gate (`autonomy.py`), the verifier (`verifier.py`),
+the agent loop (`agent.py`), retry + idempotency (`model_client.py`, `tools.py`), the start-run
+endpoint (`api.py`), and the test suite (32 tests, all passing). Nothing is stubbed or
+half-finished — no `TODO(candidate)` markers remain.
 
 ### Design decisions
 
-<!-- How did you structure the loop? How did you decide what ends a run versus what becomes an
-     observation the model sees? How do you handle the idempotency key? Anything the brief left
-     ambiguous, and what you assumed. -->
+- **The loop treats almost nothing as fatal.** An unknown tool, a failing tool call, and a
+  rejected reviewer approval all become an observation fed back to the model, not an exception —
+  only `max_steps` being exhausted or an unhandled exception (e.g. a `FatalError` from the model
+  client) ends a run early, and even those resolve to `status="failed"` rather than crashing the
+  request.
+- **The gate always runs before execution, including on the approved path.** When a write requires
+  approval and the reviewer approves it, execution falls through to the same `_execute` call used
+  for ungated writes, rather than being handled as a separate branch — this keeps there being only
+  one code path that actually performs a tool call.
+- **Idempotency keys are derived from `run.id` + step count** (`f"{run.id}:{len(run.steps)}"`),
+  generated once per logical send in `_execute`, so a retried call reuses the same key rather than
+  minting a new one.
+- **The verifier does one-to-one matching**, not "does at least one effect match": each real effect
+  can only satisfy one expected effect, tracked via a spent-index set, so two identical expectations
+  with only one matching effect correctly produce 1 matched + 1 missing rather than 2 matched.
+- **Each run gets its own `Workspace` and tool registry** in `start_run`, so concurrent runs can't
+  leak state into each other.
 
 ### Testing approach
 
-<!-- What did you test, and what did you deliberately not test? Did you write the Task 1 and 2
-     tests before the implementations? -->
+Tests were written before the implementation for all six tasks, following the brief's suggested
+TDD flow — write the test, run it, watch it fail with `NotImplementedError`, then implement.
+Worth noting on the commit history: for Task 1, Task 3, and Task 5 the test-first and
+implementation commits are split cleanly; for Task 2 and Task 4 they ended up in a single combined
+commit even though the tests were still written and confirmed failing first. That's a commit
+hygiene gap on my part, not a process one.
+
+32 tests total, covering: the gate's full decision table including the exact budget boundary; the
+verifier's five outcomes (pass, missing, unexpected, simulated-treated-identically, and the
+double-match case); the agent loop across all seven scenario types in `seed.py` (no tools, a
+successful autonomous write, the same write under shadow mode, an unknown tool, the budget being
+hit, a run that never finishes, and a fatal provider error); retry behavior for both throttled and
+fatal errors, asserting on call counts rather than just the outcome; idempotency, asserting on
+workspace state rather than return values; and one HTTP-level test through the `/runs` endpoint.
+
+I did not add tests beyond what the brief's suggested list covers — no exhaustive edge-case
+sweep, per the brief's note that 8-12 meaningful tests beat 30 that don't catch real bugs.
 
 ### What was hardest
 
-<!-- Be honest here — we read this part closely and it counts. What confused you, and how did you
-     work it out? -->
+Two things, honestly. First, getting my AI coding setup working at all — I lost real time to a
+tooling issue where my terminal session wasn't actually executing commands (it was routing
+everything through a chat-only panel instead of a real shell), which meant early prompts were
+getting misinterpreted instead of acted on. Once I found an actual terminal, it worked as expected.
+
+Second, and more substantively: understanding the codebase before writing anything. The brief
+warns this is ~70% reading, and that was accurate — working through `models.py`, the five provided
+agent-loop helpers, and how the scripted `MockModelClient` and `seed.py` scenarios tie into the
+tests took longer than any single task's implementation.
+
+One specific thing worth calling out from reading the verifier closely: without the `spent_indices`
+tracking, `verify()` would double-count a single real effect against two identical expectations —
+check the first expected effect, find `run.effects[0]`, mark it matched; check the second identical
+expectation, scan again, find the same `run.effects[0]` still unmarked, match it a second time; end
+up with everything "matched" and `passed=True` even though the agent only actually did one of the
+two things it was supposed to. That's the false positive rule 2 in the docstring exists to prevent.
 
 ### What I'd do next
 
-<!-- With another day. -->
+With more time I'd look at the optional extras: a per-tool override on the gate (so
+`send_message` could require approval even under `autonomous`), and a summary line on `Verdict`
+naming which specific expectation went missing, since that seems like the most useful of the three
+suggested extras for actually debugging a failed run. I'd also add structured logging of each step
+with the run id as a correlation id, which would help in reading `run.steps` as an audit trail at
+a glance rather than reconstructing it from the raw list.
 
 ### Time spent
 
-<!-- Roughly. There's no wrong answer; it helps us calibrate the exercise. -->
+Roughly 6-7 hours, starting around 4:30pm.
