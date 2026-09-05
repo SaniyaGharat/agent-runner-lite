@@ -137,7 +137,7 @@ sweep, per the brief's note that 8-12 meaningful tests beat 30 that don't catch 
 Two things, honestly. First, getting my AI coding setup working at all — I lost real time to a
 tooling issue where my terminal session wasn't actually executing commands (it was routing
 everything through a chat-only panel instead of a real shell), which meant early prompts were
-getting misinterpreted instead of acted on. Once I found an actual terminal, it worked as expected.
+getting misinterpreted instead of acted on. Once I found an actual terminal, it worked as expected. And I also had a network issue in my region so I was a bit slowed down by it.
 
 Second, and more substantively: understanding the codebase before writing anything. The brief
 warns this is ~70% reading, and that was accurate — working through `models.py`, the five provided
@@ -162,4 +162,4 @@ a glance rather than reconstructing it from the raw list.
 
 ### Time spent
 
-Roughly 6-7 hours, starting around 4:30pm.
+Roughly 6-7 hours.
